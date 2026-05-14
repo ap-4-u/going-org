@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: going-org
+    runtime: node
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: going-data
+      mountPath: /opt/render/project/src/uploads
+      sizeGB: 1
