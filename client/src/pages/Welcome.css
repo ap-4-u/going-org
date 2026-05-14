@@ -1,0 +1,182 @@
+.welcome-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.welcome-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.welcome-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.3;
+}
+
+.orb-1 {
+  width: 300px; height: 300px;
+  background: var(--purple);
+  top: -50px; right: -80px;
+  animation: float1 8s ease-in-out infinite;
+}
+
+.orb-2 {
+  width: 250px; height: 250px;
+  background: var(--pink);
+  bottom: 100px; left: -60px;
+  animation: float2 10s ease-in-out infinite;
+}
+
+.orb-3 {
+  width: 200px; height: 200px;
+  background: var(--blue);
+  bottom: -40px; right: -40px;
+  animation: float3 7s ease-in-out infinite;
+}
+
+@keyframes float1 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-30px, 40px); }
+}
+
+@keyframes float2 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(30px, -30px); }
+}
+
+@keyframes float3 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-20px, -30px); }
+}
+
+.welcome-content {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  width: 100%;
+}
+
+.welcome-logo {
+  margin: 0 auto 16px;
+}
+
+.logo-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 24px;
+  background: var(--gradient);
+  font-size: 40px;
+  font-weight: 900;
+  color: white;
+  box-shadow: 0 8px 32px rgba(139, 92, 246, 0.4);
+}
+
+.welcome-title {
+  font-size: 42px;
+  font-weight: 900;
+  margin-bottom: 8px;
+  letter-spacing: -1px;
+}
+
+.welcome-title span {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.welcome-sub {
+  color: var(--text-secondary);
+  font-size: 18px;
+  margin-bottom: 48px;
+}
+
+.highlight-here {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+
+.welcome-actions {
+  max-width: 300px;
+  margin: 0 auto 24px;
+}
+
+.welcome-footer {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.link-btn {
+  background: none;
+  color: var(--purple);
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: underline;
+}
+
+/* Login Modal */
+.login-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 20px; animation: fadeIn 0.2s;
+}
+
+.login-modal {
+  width: 100%; max-width: 380px; background: var(--dark-card);
+  border-radius: 20px; padding: 32px 24px; text-align: center;
+  border: 1px solid var(--dark-border); position: relative;
+}
+
+.login-close {
+  position: absolute; top: 16px; right: 16px;
+  background: none; color: var(--text-secondary); padding: 4px;
+}
+
+.login-icon { color: var(--purple); margin-bottom: 12px; }
+
+.login-modal h2 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+
+.login-sub {
+  color: var(--text-secondary); font-size: 14px; margin-bottom: 24px;
+}
+
+.login-form { text-align: left; }
+
+.login-form .input-group { margin-bottom: 16px; }
+
+.login-form .input-group label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+.login-form .text-input {
+  width: 100%; padding: 12px 14px; border-radius: 10px;
+  background: var(--dark-input); border: 1.5px solid var(--dark-border);
+  color: var(--text); font-size: 15px; transition: all 0.2s;
+}
+
+.login-form .text-input:focus {
+  border-color: var(--purple); box-shadow: 0 0 0 3px rgba(139,92,246,0.15);
+}
+
+.login-error {
+  color: #EF4444; font-size: 13px; margin-bottom: 12px;
+  background: rgba(239,68,68,0.1); padding: 8px 12px; border-radius: 8px;
+  text-align: center;
+}
+
+.login-form .btn-primary { width: 100%; margin-bottom: 10px; }
+.login-form .btn-secondary { width: 100%; }

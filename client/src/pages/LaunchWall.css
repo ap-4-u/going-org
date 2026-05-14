@@ -1,0 +1,187 @@
+.launch-wall {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.launch-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.launch-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.25;
+}
+
+.orb-a {
+  width: 300px; height: 300px;
+  background: var(--purple);
+  top: -60px; right: -80px;
+  animation: float1 8s ease-in-out infinite;
+}
+
+.orb-b {
+  width: 250px; height: 250px;
+  background: var(--pink);
+  bottom: 120px; left: -60px;
+  animation: float2 10s ease-in-out infinite;
+}
+
+.orb-c {
+  width: 200px; height: 200px;
+  background: var(--green);
+  bottom: -40px; right: -40px;
+  animation: float3 7s ease-in-out infinite;
+}
+
+@keyframes float1 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-30px, 40px); }
+}
+@keyframes float2 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(30px, -30px); }
+}
+@keyframes float3 {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-20px, -30px); }
+}
+
+.launch-content {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  width: 100%;
+  animation: fadeIn 0.8s ease-out;
+}
+
+.launch-logo { margin-bottom: 12px; }
+
+.launch-logo-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px; height: 64px;
+  border-radius: 20px;
+  background: var(--gradient);
+  font-size: 32px; font-weight: 900;
+  color: white;
+  box-shadow: 0 8px 32px rgba(139, 92, 246, 0.4);
+}
+
+.launch-title {
+  font-size: 36px; font-weight: 900;
+  margin-bottom: 32px; letter-spacing: -1px;
+}
+
+.launch-title span {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.launch-announce {
+  margin-bottom: 32px;
+}
+
+.launch-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 8px;
+}
+
+.launch-date {
+  font-size: 40px;
+  font-weight: 900;
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -1px;
+}
+
+/* Countdown */
+.countdown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.countdown-unit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--dark-card);
+  border: 1px solid var(--dark-border);
+  border-radius: 16px;
+  padding: 16px 20px;
+  min-width: 80px;
+}
+
+.countdown-num {
+  font-size: 36px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: white;
+}
+
+.countdown-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 6px;
+}
+
+.countdown-sep {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-top: -12px;
+}
+
+/* Progress bar */
+.launch-status-bar {
+  height: 6px;
+  background: var(--dark-input);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 auto 24px;
+  max-width: 280px;
+}
+
+.launch-status-fill {
+  height: 100%;
+  background: var(--gradient);
+  border-radius: 3px;
+  transition: width 1s ease;
+}
+
+.launch-sub {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 320px;
+  margin: 0 auto 28px;
+}
+
+.launch-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}

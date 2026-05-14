@@ -1,0 +1,10 @@
+node_modules/
+client/node_modules/
+client/dist/
+uploads/*
+!uploads/.gitkeep
+going.db
+.env
+.DS_Store
+going.db-shm
+going.db-wal
