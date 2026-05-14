@@ -1,5 +1,5 @@
 const express = require('express');
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { createServer } = require('http');
@@ -17,143 +17,166 @@ const io = new Server(httpServer, { cors: { origin: '*' } });
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
+const dbPath = path.join(uploadsDir, 'going.db');
+const oldDbPath = path.join(__dirname, 'going.db');
+
+const ADMIN_PASSWORD = 'snook sniffers';
+const LAUNCH_DATE = new Date('2026-05-30T07:00:00-04:00');
+function isLaunched() { return Date.now() >= LAUNCH_DATE.getTime(); }
+
+// sql.js helper wrappers to match better-sqlite3 API
+let db;
+
+function dbRun(sql, params = []) {
+  db.run(sql, params);
+  saveDb();
+}
+
+function dbGet(sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  let row = null;
+  if (stmt.step()) {
+    const cols = stmt.getColumnNames();
+    const vals = stmt.get();
+    row = {};
+    cols.forEach((c, i) => row[c] = vals[i]);
+  }
+  stmt.free();
+  return row;
+}
+
+function dbAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    const cols = stmt.getColumnNames();
+    const vals = stmt.get();
+    const row = {};
+    cols.forEach((c, i) => row[c] = vals[i]);
+    rows.push(row);
+  }
+  stmt.free();
+  return rows;
+}
+
+function saveDb() {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(dbPath, buffer);
+}
+
+async function initDb() {
+  const SQL = await initSqlJs();
+
+  if (fs.existsSync(dbPath)) {
+    const fileBuffer = fs.readFileSync(dbPath);
+    db = new SQL.Database(fileBuffer);
+  } else if (fs.existsSync(oldDbPath)) {
+    const fileBuffer = fs.readFileSync(oldDbPath);
+    db = new SQL.Database(fileBuffer);
+  } else {
+    db = new SQL.Database();
+  }
+
+  db.run("PRAGMA foreign_keys = ON");
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE,
+      password_hash TEXT,
+      name TEXT NOT NULL,
+      age INTEGER NOT NULL,
+      gender TEXT NOT NULL CHECK(gender IN ('male','female')),
+      city TEXT NOT NULL,
+      badge TEXT NOT NULL DEFAULT 'none',
+      profile_pic TEXT NOT NULL,
+      photo2 TEXT,
+      photo3 TEXT,
+      photo4 TEXT,
+      photo5 TEXT,
+      bio TEXT DEFAULT '',
+      instagram TEXT DEFAULT '',
+      snapchat TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      status TEXT DEFAULT 'going',
+      is_admin INTEGER DEFAULT 0,
+      is_promoted INTEGER DEFAULT 0,
+      is_approved INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS swipes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swiper_id TEXT NOT NULL REFERENCES users(id),
+      swiped_id TEXT NOT NULL REFERENCES users(id),
+      direction TEXT NOT NULL CHECK(direction IN ('left','right')),
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(swiper_id, swiped_id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS matches (
+      id TEXT PRIMARY KEY,
+      user1_id TEXT NOT NULL REFERENCES users(id),
+      user2_id TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      match_id TEXT NOT NULL REFERENCES matches(id),
+      sender_id TEXT NOT NULL REFERENCES users(id),
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS inbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      receiver_id TEXT NOT NULL REFERENCES users(id),
+      sender_id TEXT NOT NULL REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','rejected')),
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(receiver_id, sender_id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS profile_views (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      viewed_id TEXT NOT NULL REFERENCES users(id),
+      viewer_id TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Migrations for old DBs
+  try { db.run('ALTER TABLE users ADD COLUMN email TEXT'); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch(e) {}
+  try { db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'going'"); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN is_promoted INTEGER DEFAULT 0'); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 1'); } catch(e) {}
+
+  saveDb();
+  console.log('Database initialized');
+}
+
 app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
-const db = new Database(path.join(__dirname, 'going.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-const ADMIN_PASSWORD = 'snook sniffers';
-
-// Launch date: May 30, 2026 at 7:00 AM ET
-const LAUNCH_DATE = new Date('2026-05-30T07:00:00-04:00');
-
-function isLaunched() {
-  return Date.now() >= LAUNCH_DATE.getTime();
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE,
-    password_hash TEXT,
-    name TEXT NOT NULL,
-    age INTEGER NOT NULL,
-    gender TEXT NOT NULL CHECK(gender IN ('male','female')),
-    city TEXT NOT NULL,
-    badge TEXT NOT NULL,
-    profile_pic TEXT NOT NULL,
-    photo2 TEXT,
-    photo3 TEXT,
-    photo4 TEXT,
-    photo5 TEXT,
-    bio TEXT DEFAULT '',
-    instagram TEXT DEFAULT '',
-    snapchat TEXT DEFAULT '',
-    phone TEXT DEFAULT '',
-    status TEXT DEFAULT 'going',
-    is_admin INTEGER DEFAULT 0,
-    is_promoted INTEGER DEFAULT 0,
-    is_approved INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS swipes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    swiper_id TEXT NOT NULL REFERENCES users(id),
-    swiped_id TEXT NOT NULL REFERENCES users(id),
-    direction TEXT NOT NULL CHECK(direction IN ('left','right')),
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(swiper_id, swiped_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS matches (
-    id TEXT PRIMARY KEY,
-    user1_id TEXT NOT NULL REFERENCES users(id),
-    user2_id TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    match_id TEXT NOT NULL REFERENCES matches(id),
-    sender_id TEXT NOT NULL REFERENCES users(id),
-    text TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS inbox (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    receiver_id TEXT NOT NULL REFERENCES users(id),
-    sender_id TEXT NOT NULL REFERENCES users(id),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','rejected')),
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(receiver_id, sender_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS profile_views (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    viewed_id TEXT NOT NULL REFERENCES users(id),
-    viewer_id TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-`);
-
-// Launch status endpoint
-app.get('/api/launch-status', (req, res) => {
-  const launched = isLaunched();
-  res.json({ launched, launchDate: LAUNCH_DATE.toISOString() });
-});
-
-// Add columns if they don't exist (for existing DBs)
-try { db.exec('ALTER TABLE users ADD COLUMN email TEXT'); } catch(e) {}
-try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch(e) {}
-try { db.exec('ALTER TABLE users ADD COLUMN status TEXT DEFAULT \'going\''); } catch(e) {}
-try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
-try { db.exec('ALTER TABLE users ADD COLUMN is_promoted INTEGER DEFAULT 0'); } catch(e) {}
-try { db.exec('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 1'); } catch(e) {}
-
-// Migrate: remove CHECK constraint on badge column (old DBs had it locked to 3 values)
-try {
-  const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE name='users'").get();
-  if (tableInfo && tableInfo.sql.includes("CHECK(badge IN")) {
-    db.exec(`
-      CREATE TABLE users_new (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE,
-        password_hash TEXT,
-        name TEXT NOT NULL,
-        age INTEGER NOT NULL,
-        gender TEXT NOT NULL CHECK(gender IN ('male','female')),
-        city TEXT NOT NULL,
-        badge TEXT NOT NULL DEFAULT 'none',
-        profile_pic TEXT NOT NULL,
-        photo2 TEXT,
-        photo3 TEXT,
-        photo4 TEXT,
-        photo5 TEXT,
-        bio TEXT DEFAULT '',
-        instagram TEXT DEFAULT '',
-        snapchat TEXT DEFAULT '',
-        phone TEXT DEFAULT '',
-        status TEXT DEFAULT 'going',
-        is_admin INTEGER DEFAULT 0,
-        is_promoted INTEGER DEFAULT 0,
-        is_approved INTEGER DEFAULT 1,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-      INSERT INTO users_new SELECT id, email, password_hash, name, age, gender, city, badge, profile_pic, photo2, photo3, photo4, photo5, bio, instagram, snapchat, phone, status, is_admin, is_promoted, is_approved, created_at FROM users;
-      DROP TABLE users;
-      ALTER TABLE users_new RENAME TO users;
-    `);
-    console.log('Migrated users table: removed badge CHECK constraint');
-  }
-} catch(e) { console.error('Badge migration error:', e.message); }
-
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, 'uploads')),
+  destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
     cb(null, uuidv4() + ext);
@@ -161,7 +184,22 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Register user
+// Launch status
+app.get('/api/launch-status', (req, res) => {
+  res.json({ launched: isLaunched(), launchDate: LAUNCH_DATE.toISOString() });
+});
+
+function verifyAdmin(adminKey) {
+  return adminKey && adminKey.toLowerCase().trim() === ADMIN_PASSWORD;
+}
+
+function publicUser(u) {
+  if (!u) return u;
+  const { password_hash, is_admin, is_promoted, is_approved, ...safe } = u;
+  return safe;
+}
+
+// Register
 app.post('/api/register', upload.array('photos', 5), (req, res) => {
   try {
     const { email, password, name, age, gender, city, badge, status, bio, instagram, snapchat, phone } = req.body;
@@ -172,8 +210,7 @@ app.post('/api/register', upload.array('photos', 5), (req, res) => {
     if (parsedAge < 16 || parsedAge > 21) {
       return res.status(400).json({ error: 'Age must be between 16 and 21' });
     }
-    // Check if email already exists
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase().trim());
+    const existing = dbGet('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
     if (existing) {
       return res.status(400).json({ error: 'An account with this email already exists' });
     }
@@ -182,14 +219,14 @@ app.post('/api/register', upload.array('photos', 5), (req, res) => {
     const password_hash = bcrypt.hashSync(password, 10);
     const photos = req.files.map(f => f.filename);
 
-    db.prepare(`
+    dbRun(`
       INSERT INTO users (id, email, password_hash, name, age, gender, city, badge, status, profile_pic, photo2, photo3, photo4, photo5, bio, instagram, snapchat, phone)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `, [
       id, email.toLowerCase().trim(), password_hash, name, parsedAge, gender, city, badge, status || 'going',
       photos[0] || null, photos[1] || null, photos[2] || null, photos[3] || null, photos[4] || null,
       bio || '', instagram || '', snapchat || '', phone || ''
-    );
+    ]);
 
     res.json({ id, name, age: parsedAge, gender, city, badge });
   } catch (err) {
@@ -205,14 +242,13 @@ app.post('/api/login', (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
+    const user = dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
     if (!user) {
       return res.status(401).json({ error: 'No account found with that email' });
     }
     if (!bcrypt.compareSync(password, user.password_hash)) {
       return res.status(401).json({ error: 'Incorrect password' });
     }
-    // Don't send password hash to client
     const { password_hash, ...safeUser } = user;
     res.json(safeUser);
   } catch (err) {
@@ -221,18 +257,10 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-// Strip sensitive fields from user objects sent to other users
-function publicUser(u) {
-  if (!u) return u;
-  const { password_hash, is_admin, is_promoted, is_approved, ...safe } = u;
-  return safe;
-}
-
-// Get user profile
+// Get user
 app.get('/api/users/:id', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  // Return full data to the user themselves (they need is_admin etc.), strip for others
   const requesterId = req.query.self;
   if (requesterId === req.params.id) {
     const { password_hash, ...safeUser } = user;
@@ -241,11 +269,11 @@ app.get('/api/users/:id', (req, res) => {
   res.json(publicUser(user));
 });
 
-// Update user profile
+// Update user
 app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
   try {
     const { name, age, city, badge, status, bio, instagram, snapchat, phone } = req.body;
-    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const existing = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (!existing) return res.status(404).json({ error: 'User not found' });
 
     let photoUpdates = {};
@@ -260,11 +288,11 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
       };
     }
 
-    db.prepare(`
+    dbRun(`
       UPDATE users SET name=?, age=?, city=?, badge=?, status=?, bio=?, instagram=?, snapchat=?, phone=?,
       profile_pic=?, photo2=?, photo3=?, photo4=?, photo5=?
       WHERE id=?
-    `).run(
+    `, [
       name || existing.name,
       age ? parseInt(age) : existing.age,
       city || existing.city,
@@ -280,9 +308,9 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
       photoUpdates.photo4 || existing.photo4,
       photoUpdates.photo5 || existing.photo5,
       req.params.id
-    );
+    ]);
 
-    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const updated = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -290,18 +318,18 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
   }
 });
 
-// Delete user profile
+// Delete user
 app.delete('/api/users/:id', (req, res) => {
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    db.prepare('DELETE FROM messages WHERE sender_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?').run(req.params.id, req.params.id);
-    db.prepare('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?').run(req.params.id, req.params.id);
-    db.prepare('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?').run(req.params.id, req.params.id);
-    db.prepare('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?').run(req.params.id, req.params.id);
-    db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+    dbRun('DELETE FROM messages WHERE sender_id = ?', [req.params.id]);
+    dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [req.params.id, req.params.id]);
+    dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [req.params.id, req.params.id]);
+    dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [req.params.id, req.params.id]);
+    dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [req.params.id, req.params.id]);
+    dbRun('DELETE FROM users WHERE id = ?', [req.params.id]);
 
     res.json({ success: true });
   } catch (err) {
@@ -315,17 +343,15 @@ app.post('/api/profile-view', (req, res) => {
   const { viewedId, viewerId } = req.body;
   if (!viewedId || !viewerId || viewedId === viewerId) return res.json({ ok: true });
   try {
-    db.prepare('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)').run(viewedId, viewerId);
-    res.json({ ok: true });
-  } catch (err) {
-    res.json({ ok: true });
-  }
+    dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [viewedId, viewerId]);
+  } catch (err) {}
+  res.json({ ok: true });
 });
 
-// Get profile view count + recent viewers
+// Get profile views
 app.get('/api/profile-views/:userId', (req, res) => {
-  const count = db.prepare('SELECT COUNT(*) as count FROM profile_views WHERE viewed_id = ?').get(req.params.userId);
-  const viewers = db.prepare(`
+  const count = dbGet('SELECT COUNT(*) as count FROM profile_views WHERE viewed_id = ?', [req.params.userId]);
+  const viewers = dbAll(`
     SELECT DISTINCT users.id, users.name, users.age, users.city, users.profile_pic, users.badge,
       MAX(profile_views.created_at) as viewed_at
     FROM profile_views
@@ -334,31 +360,23 @@ app.get('/api/profile-views/:userId', (req, res) => {
     GROUP BY users.id
     ORDER BY viewed_at DESC
     LIMIT 50
-  `).all(req.params.userId);
-  res.json({ count: count.count, viewers });
+  `, [req.params.userId]);
+  res.json({ count: count ? count.count : 0, viewers });
 });
 
-// Admin login — just verifies password, no DB changes
+// Admin login
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Missing password' });
-
   if (password.toLowerCase().trim() !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: 'Invalid password' });
   }
-
   res.json({ success: true });
 });
 
-// Admin auth helper — verify by password in request, not DB flag
-function verifyAdmin(adminKey) {
-  return adminKey && adminKey.toLowerCase().trim() === ADMIN_PASSWORD;
-}
-
-// Admin: search all profiles
+// Admin: search profiles
 app.get('/api/admin/profiles', (req, res) => {
   const { adminKey, city, minAge, maxAge, gender, badge, search } = req.query;
-
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
   let query = 'SELECT * FROM users WHERE 1=1';
@@ -372,77 +390,71 @@ app.get('/api/admin/profiles', (req, res) => {
   if (search) { query += ' AND name LIKE ?'; params.push(`%${search}%`); }
 
   query += ' ORDER BY created_at DESC LIMIT 200';
-
-  const profiles = db.prepare(query).all(...params);
-  res.json(profiles);
+  res.json(dbAll(query, params));
 });
 
-// Admin: get stats
+// Admin: stats
 app.get('/api/admin/stats', (req, res) => {
   const { adminKey } = req.query;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
-  const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
-  const totalFemale = db.prepare("SELECT COUNT(*) as c FROM users WHERE gender='female'").get().c;
-  const totalMale = db.prepare("SELECT COUNT(*) as c FROM users WHERE gender='male'").get().c;
-  const totalMatches = db.prepare('SELECT COUNT(*) as c FROM matches').get().c;
-  const totalMessages = db.prepare('SELECT COUNT(*) as c FROM messages').get().c;
-  const totalSwipes = db.prepare('SELECT COUNT(*) as c FROM swipes').get().c;
+  const totalUsers = dbGet('SELECT COUNT(*) as c FROM users').c;
+  const totalFemale = dbGet("SELECT COUNT(*) as c FROM users WHERE gender='female'").c;
+  const totalMale = dbGet("SELECT COUNT(*) as c FROM users WHERE gender='male'").c;
+  const totalMatches = dbGet('SELECT COUNT(*) as c FROM matches').c;
+  const totalMessages = dbGet('SELECT COUNT(*) as c FROM messages').c;
+  const totalSwipes = dbGet('SELECT COUNT(*) as c FROM swipes').c;
 
-  const cityCounts = db.prepare('SELECT city, COUNT(*) as count FROM users GROUP BY city ORDER BY count DESC').all();
-  const badgeCounts = db.prepare('SELECT badge, COUNT(*) as count FROM users GROUP BY badge ORDER BY count DESC').all();
+  const cityCounts = dbAll('SELECT city, COUNT(*) as count FROM users GROUP BY city ORDER BY count DESC');
+  const badgeCounts = dbAll('SELECT badge, COUNT(*) as count FROM users GROUP BY badge ORDER BY count DESC');
 
   res.json({ totalUsers, totalFemale, totalMale, totalMatches, totalMessages, totalSwipes, cityCounts, badgeCounts });
 });
 
-// Admin: approve/unapprove user
+// Admin: approve/unapprove
 app.post('/api/admin/approve', (req, res) => {
   const { adminKey, targetId, approved } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-
-  db.prepare('UPDATE users SET is_approved = ? WHERE id = ?').run(approved ? 1 : 0, targetId);
+  dbRun('UPDATE users SET is_approved = ? WHERE id = ?', [approved ? 1 : 0, targetId]);
   res.json({ success: true });
 });
 
-// Admin: promote/demote (self-promote to appear on everyone's feed)
+// Admin: promote/demote
 app.post('/api/admin/promote', (req, res) => {
   const { adminKey, targetId, promoted } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-
-  db.prepare('UPDATE users SET is_promoted = ? WHERE id = ?').run(promoted ? 1 : 0, targetId);
+  dbRun('UPDATE users SET is_promoted = ? WHERE id = ?', [promoted ? 1 : 0, targetId]);
   res.json({ success: true });
 });
 
-// Admin: delete any user
+// Admin: delete user
 app.post('/api/admin/delete-user', (req, res) => {
   const { adminKey, targetId } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
-  db.prepare('DELETE FROM messages WHERE sender_id = ?').run(targetId);
-  db.prepare('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?').run(targetId, targetId);
-  db.prepare('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?').run(targetId, targetId);
-  db.prepare('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?').run(targetId, targetId);
-  db.prepare('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?').run(targetId, targetId);
-  db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
+  dbRun('DELETE FROM messages WHERE sender_id = ?', [targetId]);
+  dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [targetId, targetId]);
+  dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [targetId, targetId]);
+  dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [targetId, targetId]);
+  dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [targetId, targetId]);
+  dbRun('DELETE FROM users WHERE id = ?', [targetId]);
 
   res.json({ success: true });
 });
 
-// Admin: reset swipes (let admin re-swipe everyone)
+// Admin: reset swipes
 app.post('/api/admin/reset-swipes', (req, res) => {
   const { adminKey, userId } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-
-  db.prepare('DELETE FROM swipes WHERE swiper_id = ?').run(userId);
+  dbRun('DELETE FROM swipes WHERE swiper_id = ?', [userId]);
   res.json({ success: true });
 });
 
-// Get profiles to swipe — promoted users show for everyone regardless of gender
+// Discover
 app.get('/api/discover/:userId', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.userId);
+  const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.userId]);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  // Launch gate: pass adminKey to bypass
   const { minAge, maxAge, city, badge, adminKey } = req.query;
   if (!isLaunched() && !verifyAdmin(adminKey)) {
     return res.json([]);
@@ -450,7 +462,6 @@ app.get('/api/discover/:userId', (req, res) => {
 
   const targetGender = user.gender === 'male' ? 'female' : 'male';
 
-  // Normal profiles (opposite gender) + promoted profiles (appear for everyone)
   let query = `
     SELECT * FROM users
     WHERE id != ?
@@ -465,11 +476,10 @@ app.get('/api/discover/:userId', (req, res) => {
   if (city) { query += ' AND city = ?'; params.push(city); }
   if (badge) { query += ' AND badge = ?'; params.push(badge); }
 
-  // Promoted users appear first, then sort by city match and age similarity
   query += ' ORDER BY is_promoted DESC, (CASE WHEN city = ? THEN 0 ELSE 1 END), ABS(age - ?) ASC LIMIT 50';
   params.push(user.city, user.age);
 
-  const profiles = db.prepare(query).all(...params).map(publicUser);
+  const profiles = dbAll(query, params).map(publicUser);
   res.json(profiles);
 });
 
@@ -480,40 +490,39 @@ app.post('/api/swipe', (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  // Launch gate
   if (!isLaunched() && !verifyAdmin(req.body.adminKey)) {
     return res.status(403).json({ error: 'App not launched yet' });
   }
 
   try {
-    db.prepare('INSERT OR REPLACE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)')
-      .run(swiperId, swipedId, direction);
+    dbRun('INSERT OR REPLACE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+      [swiperId, swipedId, direction]);
 
-    // Track profile view on swipe
     try {
-      db.prepare('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)').run(swipedId, swiperId);
+      dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [swipedId, swiperId]);
     } catch(e) {}
 
     if (direction === 'right') {
-      db.prepare('INSERT OR IGNORE INTO inbox (receiver_id, sender_id) VALUES (?, ?)')
-        .run(swipedId, swiperId);
+      dbRun('INSERT OR IGNORE INTO inbox (receiver_id, sender_id) VALUES (?, ?)', [swipedId, swiperId]);
 
-      const mutual = db.prepare(
-        'SELECT * FROM swipes WHERE swiper_id = ? AND swiped_id = ? AND direction = ?'
-      ).get(swipedId, swiperId, 'right');
+      const mutual = dbGet(
+        'SELECT * FROM swipes WHERE swiper_id = ? AND swiped_id = ? AND direction = ?',
+        [swipedId, swiperId, 'right']
+      );
 
       if (mutual) {
         const matchId = uuidv4();
-        db.prepare('INSERT OR IGNORE INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)')
-          .run(matchId, swiperId, swipedId);
+        dbRun('INSERT OR IGNORE INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
+          [matchId, swiperId, swipedId]);
 
-        db.prepare('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?')
-          .run('accepted', swipedId, swiperId);
-        db.prepare('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?')
-          .run('accepted', swiperId, swipedId);
+        dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+          ['accepted', swipedId, swiperId]);
+        dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+          ['accepted', swiperId, swipedId]);
 
-        const otherUser = db.prepare('SELECT * FROM users WHERE id = ?').get(swipedId);
-        io.to(swipedId).emit('new_match', { matchId, user: db.prepare('SELECT * FROM users WHERE id = ?').get(swiperId) });
+        const otherUser = dbGet('SELECT * FROM users WHERE id = ?', [swipedId]);
+        const thisUser = dbGet('SELECT * FROM users WHERE id = ?', [swiperId]);
+        io.to(swipedId).emit('new_match', { matchId, user: thisUser });
         io.to(swiperId).emit('new_match', { matchId, user: otherUser });
 
         return res.json({ match: true, matchId, user: otherUser });
@@ -527,58 +536,60 @@ app.post('/api/swipe', (req, res) => {
   }
 });
 
-// Get inbox
+// Inbox
 app.get('/api/inbox/:userId', (req, res) => {
-  const items = db.prepare(`
+  const items = dbAll(`
     SELECT inbox.*, users.name, users.age, users.city, users.badge, users.profile_pic, users.gender
     FROM inbox
     JOIN users ON users.id = inbox.sender_id
     WHERE inbox.receiver_id = ? AND inbox.status = 'pending'
     ORDER BY inbox.created_at DESC
-  `).all(req.params.userId);
+  `, [req.params.userId]);
   res.json(items);
 });
 
-// Respond to inbox (accept/reject)
+// Respond to inbox
 app.post('/api/inbox/respond', (req, res) => {
   const { receiverId, senderId, action } = req.body;
 
   if (action === 'accept') {
-    db.prepare('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?')
-      .run('accepted', receiverId, senderId);
+    dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+      ['accepted', receiverId, senderId]);
 
-    db.prepare('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)')
-      .run(receiverId, senderId, 'right');
+    dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+      [receiverId, senderId, 'right']);
 
-    const matchId = uuidv4();
-    const existingMatch = db.prepare(
-      'SELECT * FROM matches WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)'
-    ).get(receiverId, senderId, senderId, receiverId);
+    const existingMatch = dbGet(
+      'SELECT * FROM matches WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)',
+      [receiverId, senderId, senderId, receiverId]
+    );
 
+    const matchId = existingMatch ? existingMatch.id : uuidv4();
     if (!existingMatch) {
-      db.prepare('INSERT INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)')
-        .run(matchId, senderId, receiverId);
+      dbRun('INSERT INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
+        [matchId, senderId, receiverId]);
     }
 
-    const sender = db.prepare('SELECT * FROM users WHERE id = ?').get(senderId);
-    const receiver = db.prepare('SELECT * FROM users WHERE id = ?').get(receiverId);
+    const sender = dbGet('SELECT * FROM users WHERE id = ?', [senderId]);
+    const receiver = dbGet('SELECT * FROM users WHERE id = ?', [receiverId]);
 
-    io.to(senderId).emit('new_match', { matchId: existingMatch?.id || matchId, user: receiver });
-    io.to(receiverId).emit('new_match', { matchId: existingMatch?.id || matchId, user: sender });
+    io.to(senderId).emit('new_match', { matchId, user: receiver });
+    io.to(receiverId).emit('new_match', { matchId, user: sender });
 
-    res.json({ matched: true, matchId: existingMatch?.id || matchId });
+    res.json({ matched: true, matchId });
   } else {
-    db.prepare('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?')
-      .run('rejected', receiverId, senderId);
-    db.prepare('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)')
-      .run(receiverId, senderId, 'left');
+    dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+      ['rejected', receiverId, senderId]);
+    dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+      [receiverId, senderId, 'left']);
     res.json({ matched: false });
   }
 });
 
-// Get matches
+// Matches
 app.get('/api/matches/:userId', (req, res) => {
-  const matches = db.prepare(`
+  const uid = req.params.userId;
+  const matches = dbAll(`
     SELECT matches.id as matchId, matches.created_at as matchedAt,
       CASE WHEN matches.user1_id = ? THEN u2.id ELSE u1.id END as partnerId,
       CASE WHEN matches.user1_id = ? THEN u2.name ELSE u1.name END as partnerName,
@@ -596,24 +607,19 @@ app.get('/api/matches/:userId', (req, res) => {
     JOIN users u2 ON u2.id = matches.user2_id
     WHERE matches.user1_id = ? OR matches.user2_id = ?
     ORDER BY lastMessageAt DESC NULLS LAST, matches.created_at DESC
-  `).all(
-    req.params.userId, req.params.userId, req.params.userId,
-    req.params.userId, req.params.userId, req.params.userId,
-    req.params.userId, req.params.userId, req.params.userId,
-    req.params.userId, req.params.userId
-  );
+  `, [uid, uid, uid, uid, uid, uid, uid, uid, uid, uid, uid]);
   res.json(matches);
 });
 
-// Get messages for a match
+// Messages
 app.get('/api/messages/:matchId', (req, res) => {
-  const messages = db.prepare(`
+  const messages = dbAll(`
     SELECT messages.*, users.name as senderName, users.profile_pic as senderPic
     FROM messages
     JOIN users ON users.id = messages.sender_id
     WHERE messages.match_id = ?
     ORDER BY messages.created_at ASC
-  `).all(req.params.matchId);
+  `, [req.params.matchId]);
   res.json(messages);
 });
 
@@ -625,16 +631,16 @@ app.post('/api/messages', (req, res) => {
   }
 
   const id = uuidv4();
-  db.prepare('INSERT INTO messages (id, match_id, sender_id, text) VALUES (?, ?, ?, ?)')
-    .run(id, matchId, senderId, text);
+  dbRun('INSERT INTO messages (id, match_id, sender_id, text) VALUES (?, ?, ?, ?)',
+    [id, matchId, senderId, text]);
 
-  const message = db.prepare(`
+  const message = dbGet(`
     SELECT messages.*, users.name as senderName, users.profile_pic as senderPic
     FROM messages JOIN users ON users.id = messages.sender_id
     WHERE messages.id = ?
-  `).get(id);
+  `, [id]);
 
-  const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
+  const match = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
   const recipientId = match.user1_id === senderId ? match.user2_id : match.user1_id;
 
   io.to(recipientId).emit('new_message', message);
@@ -650,7 +656,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve client build in production
+// Serve client build
 if (fs.existsSync(path.join(__dirname, 'client', 'dist'))) {
   app.use(express.static(path.join(__dirname, 'client', 'dist')));
   app.get('/{*splat}', (req, res) => {
@@ -660,5 +666,11 @@ if (fs.existsSync(path.join(__dirname, 'client', 'dist'))) {
   });
 }
 
+// Start server after DB init
 const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, () => console.log(`Going.org server running on port ${PORT}`));
+initDb().then(() => {
+  httpServer.listen(PORT, () => console.log(`Going.org server running on port ${PORT}`));
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
+});
