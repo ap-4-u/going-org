@@ -1,5 +1,5 @@
 const express = require('express');
-const initSqlJs = require('sql.js');
+const { createClient } = require('@libsql/client');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { createServer } = require('http');
@@ -17,72 +17,35 @@ const io = new Server(httpServer, { cors: { origin: '*' } });
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-const dbPath = path.join(uploadsDir, 'going.db');
-const oldDbPath = path.join(__dirname, 'going.db');
-
 const ADMIN_PASSWORD = 'snook sniffers';
 const LAUNCH_DATE = new Date('2026-05-30T07:00:00-04:00');
 function isLaunched() { return Date.now() >= LAUNCH_DATE.getTime(); }
 
-// sql.js helper wrappers to match better-sqlite3 API
-let db;
+// Turso database client
+const db = createClient({
+  url: process.env.TURSO_URL || 'file:' + path.join(uploadsDir, 'going.db'),
+  authToken: process.env.TURSO_TOKEN || undefined,
+});
 
-function dbRun(sql, params = []) {
-  db.run(sql, params);
-  saveDb();
+// Async DB helpers
+async function dbRun(sql, params = []) {
+  await db.execute({ sql, args: params });
 }
 
-function dbGet(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  let row = null;
-  if (stmt.step()) {
-    const cols = stmt.getColumnNames();
-    const vals = stmt.get();
-    row = {};
-    cols.forEach((c, i) => row[c] = vals[i]);
-  }
-  stmt.free();
-  return row;
+async function dbGet(sql, params = []) {
+  const result = await db.execute({ sql, args: params });
+  return result.rows[0] || null;
 }
 
-function dbAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) {
-    const cols = stmt.getColumnNames();
-    const vals = stmt.get();
-    const row = {};
-    cols.forEach((c, i) => row[c] = vals[i]);
-    rows.push(row);
-  }
-  stmt.free();
-  return rows;
-}
-
-function saveDb() {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbPath, buffer);
+async function dbAll(sql, params = []) {
+  const result = await db.execute({ sql, args: params });
+  return result.rows;
 }
 
 async function initDb() {
-  const SQL = await initSqlJs();
+  await db.execute("PRAGMA foreign_keys = ON");
 
-  if (fs.existsSync(dbPath)) {
-    const fileBuffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(fileBuffer);
-  } else if (fs.existsSync(oldDbPath)) {
-    const fileBuffer = fs.readFileSync(oldDbPath);
-    db = new SQL.Database(fileBuffer);
-  } else {
-    db = new SQL.Database();
-  }
-
-  db.run("PRAGMA foreign_keys = ON");
-
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE,
@@ -109,7 +72,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS swipes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       swiper_id TEXT NOT NULL REFERENCES users(id),
@@ -120,7 +83,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS matches (
       id TEXT PRIMARY KEY,
       user1_id TEXT NOT NULL REFERENCES users(id),
@@ -129,7 +92,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       match_id TEXT NOT NULL REFERENCES matches(id),
@@ -139,7 +102,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS inbox (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       receiver_id TEXT NOT NULL REFERENCES users(id),
@@ -150,7 +113,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS profile_views (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       viewed_id TEXT NOT NULL REFERENCES users(id),
@@ -160,14 +123,13 @@ async function initDb() {
   `);
 
   // Migrations for old DBs
-  try { db.run('ALTER TABLE users ADD COLUMN email TEXT'); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch(e) {}
-  try { db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'going'"); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN is_promoted INTEGER DEFAULT 0'); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 1'); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN email TEXT'); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch(e) {}
+  try { await db.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'going'"); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN is_promoted INTEGER DEFAULT 0'); } catch(e) {}
+  try { await db.execute('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 1'); } catch(e) {}
 
-  saveDb();
   console.log('Database initialized');
 }
 
@@ -200,7 +162,7 @@ function publicUser(u) {
 }
 
 // Register
-app.post('/api/register', upload.array('photos', 5), (req, res) => {
+app.post('/api/register', upload.array('photos', 5), async (req, res) => {
   try {
     const { email, password, name, age, gender, city, badge, status, bio, instagram, snapchat, phone } = req.body;
     if (!email || !password || !name || !age || !gender || !city || !badge || !req.files || req.files.length === 0) {
@@ -210,7 +172,7 @@ app.post('/api/register', upload.array('photos', 5), (req, res) => {
     if (parsedAge < 16 || parsedAge > 21) {
       return res.status(400).json({ error: 'Age must be between 16 and 21' });
     }
-    const existing = dbGet('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    const existing = await dbGet('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
     if (existing) {
       return res.status(400).json({ error: 'An account with this email already exists' });
     }
@@ -219,7 +181,7 @@ app.post('/api/register', upload.array('photos', 5), (req, res) => {
     const password_hash = bcrypt.hashSync(password, 10);
     const photos = req.files.map(f => f.filename);
 
-    dbRun(`
+    await dbRun(`
       INSERT INTO users (id, email, password_hash, name, age, gender, city, badge, status, profile_pic, photo2, photo3, photo4, photo5, bio, instagram, snapchat, phone)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
@@ -236,13 +198,13 @@ app.post('/api/register', upload.array('photos', 5), (req, res) => {
 });
 
 // Login
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    const user = dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    const user = await dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
     if (!user) {
       return res.status(401).json({ error: 'No account found with that email' });
     }
@@ -258,8 +220,8 @@ app.post('/api/login', (req, res) => {
 });
 
 // Get user
-app.get('/api/users/:id', (req, res) => {
-  const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
+app.get('/api/users/:id', async (req, res) => {
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const requesterId = req.query.self;
   if (requesterId === req.params.id) {
@@ -270,10 +232,10 @@ app.get('/api/users/:id', (req, res) => {
 });
 
 // Update user
-app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
+app.put('/api/users/:id', upload.array('photos', 5), async (req, res) => {
   try {
     const { name, age, city, badge, status, bio, instagram, snapchat, phone } = req.body;
-    const existing = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    const existing = await dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (!existing) return res.status(404).json({ error: 'User not found' });
 
     let photoUpdates = {};
@@ -288,7 +250,7 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
       };
     }
 
-    dbRun(`
+    await dbRun(`
       UPDATE users SET name=?, age=?, city=?, badge=?, status=?, bio=?, instagram=?, snapchat=?, phone=?,
       profile_pic=?, photo2=?, photo3=?, photo4=?, photo5=?
       WHERE id=?
@@ -310,7 +272,7 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
       req.params.id
     ]);
 
-    const updated = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    const updated = await dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -319,17 +281,17 @@ app.put('/api/users/:id', upload.array('photos', 5), (req, res) => {
 });
 
 // Delete user
-app.delete('/api/users/:id', (req, res) => {
+app.delete('/api/users/:id', async (req, res) => {
   try {
-    const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    dbRun('DELETE FROM messages WHERE sender_id = ?', [req.params.id]);
-    dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [req.params.id, req.params.id]);
-    dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [req.params.id, req.params.id]);
-    dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [req.params.id, req.params.id]);
-    dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [req.params.id, req.params.id]);
-    dbRun('DELETE FROM users WHERE id = ?', [req.params.id]);
+    await dbRun('DELETE FROM messages WHERE sender_id = ?', [req.params.id]);
+    await dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [req.params.id, req.params.id]);
+    await dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [req.params.id, req.params.id]);
+    await dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [req.params.id, req.params.id]);
+    await dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [req.params.id, req.params.id]);
+    await dbRun('DELETE FROM users WHERE id = ?', [req.params.id]);
 
     res.json({ success: true });
   } catch (err) {
@@ -339,19 +301,19 @@ app.delete('/api/users/:id', (req, res) => {
 });
 
 // Track profile view
-app.post('/api/profile-view', (req, res) => {
+app.post('/api/profile-view', async (req, res) => {
   const { viewedId, viewerId } = req.body;
   if (!viewedId || !viewerId || viewedId === viewerId) return res.json({ ok: true });
   try {
-    dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [viewedId, viewerId]);
+    await dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [viewedId, viewerId]);
   } catch (err) {}
   res.json({ ok: true });
 });
 
 // Get profile views
-app.get('/api/profile-views/:userId', (req, res) => {
-  const count = dbGet('SELECT COUNT(*) as count FROM profile_views WHERE viewed_id = ?', [req.params.userId]);
-  const viewers = dbAll(`
+app.get('/api/profile-views/:userId', async (req, res) => {
+  const count = await dbGet('SELECT COUNT(*) as count FROM profile_views WHERE viewed_id = ?', [req.params.userId]);
+  const viewers = await dbAll(`
     SELECT DISTINCT users.id, users.name, users.age, users.city, users.profile_pic, users.badge,
       MAX(profile_views.created_at) as viewed_at
     FROM profile_views
@@ -375,7 +337,7 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 // Admin: search profiles
-app.get('/api/admin/profiles', (req, res) => {
+app.get('/api/admin/profiles', async (req, res) => {
   const { adminKey, city, minAge, maxAge, gender, badge, search } = req.query;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
@@ -390,69 +352,69 @@ app.get('/api/admin/profiles', (req, res) => {
   if (search) { query += ' AND name LIKE ?'; params.push(`%${search}%`); }
 
   query += ' ORDER BY created_at DESC LIMIT 200';
-  res.json(dbAll(query, params));
+  res.json(await dbAll(query, params));
 });
 
 // Admin: stats
-app.get('/api/admin/stats', (req, res) => {
+app.get('/api/admin/stats', async (req, res) => {
   const { adminKey } = req.query;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
-  const totalUsers = dbGet('SELECT COUNT(*) as c FROM users').c;
-  const totalFemale = dbGet("SELECT COUNT(*) as c FROM users WHERE gender='female'").c;
-  const totalMale = dbGet("SELECT COUNT(*) as c FROM users WHERE gender='male'").c;
-  const totalMatches = dbGet('SELECT COUNT(*) as c FROM matches').c;
-  const totalMessages = dbGet('SELECT COUNT(*) as c FROM messages').c;
-  const totalSwipes = dbGet('SELECT COUNT(*) as c FROM swipes').c;
+  const totalUsers = (await dbGet('SELECT COUNT(*) as c FROM users')).c;
+  const totalFemale = (await dbGet("SELECT COUNT(*) as c FROM users WHERE gender='female'")).c;
+  const totalMale = (await dbGet("SELECT COUNT(*) as c FROM users WHERE gender='male'")).c;
+  const totalMatches = (await dbGet('SELECT COUNT(*) as c FROM matches')).c;
+  const totalMessages = (await dbGet('SELECT COUNT(*) as c FROM messages')).c;
+  const totalSwipes = (await dbGet('SELECT COUNT(*) as c FROM swipes')).c;
 
-  const cityCounts = dbAll('SELECT city, COUNT(*) as count FROM users GROUP BY city ORDER BY count DESC');
-  const badgeCounts = dbAll('SELECT badge, COUNT(*) as count FROM users GROUP BY badge ORDER BY count DESC');
+  const cityCounts = await dbAll('SELECT city, COUNT(*) as count FROM users GROUP BY city ORDER BY count DESC');
+  const badgeCounts = await dbAll('SELECT badge, COUNT(*) as count FROM users GROUP BY badge ORDER BY count DESC');
 
   res.json({ totalUsers, totalFemale, totalMale, totalMatches, totalMessages, totalSwipes, cityCounts, badgeCounts });
 });
 
 // Admin: approve/unapprove
-app.post('/api/admin/approve', (req, res) => {
+app.post('/api/admin/approve', async (req, res) => {
   const { adminKey, targetId, approved } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-  dbRun('UPDATE users SET is_approved = ? WHERE id = ?', [approved ? 1 : 0, targetId]);
+  await dbRun('UPDATE users SET is_approved = ? WHERE id = ?', [approved ? 1 : 0, targetId]);
   res.json({ success: true });
 });
 
 // Admin: promote/demote
-app.post('/api/admin/promote', (req, res) => {
+app.post('/api/admin/promote', async (req, res) => {
   const { adminKey, targetId, promoted } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-  dbRun('UPDATE users SET is_promoted = ? WHERE id = ?', [promoted ? 1 : 0, targetId]);
+  await dbRun('UPDATE users SET is_promoted = ? WHERE id = ?', [promoted ? 1 : 0, targetId]);
   res.json({ success: true });
 });
 
 // Admin: delete user
-app.post('/api/admin/delete-user', (req, res) => {
+app.post('/api/admin/delete-user', async (req, res) => {
   const { adminKey, targetId } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
 
-  dbRun('DELETE FROM messages WHERE sender_id = ?', [targetId]);
-  dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [targetId, targetId]);
-  dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [targetId, targetId]);
-  dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [targetId, targetId]);
-  dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [targetId, targetId]);
-  dbRun('DELETE FROM users WHERE id = ?', [targetId]);
+  await dbRun('DELETE FROM messages WHERE sender_id = ?', [targetId]);
+  await dbRun('DELETE FROM matches WHERE user1_id = ? OR user2_id = ?', [targetId, targetId]);
+  await dbRun('DELETE FROM inbox WHERE receiver_id = ? OR sender_id = ?', [targetId, targetId]);
+  await dbRun('DELETE FROM swipes WHERE swiper_id = ? OR swiped_id = ?', [targetId, targetId]);
+  await dbRun('DELETE FROM profile_views WHERE viewed_id = ? OR viewer_id = ?', [targetId, targetId]);
+  await dbRun('DELETE FROM users WHERE id = ?', [targetId]);
 
   res.json({ success: true });
 });
 
 // Admin: reset swipes
-app.post('/api/admin/reset-swipes', (req, res) => {
+app.post('/api/admin/reset-swipes', async (req, res) => {
   const { adminKey, userId } = req.body;
   if (!verifyAdmin(adminKey)) return res.status(403).json({ error: 'Not admin' });
-  dbRun('DELETE FROM swipes WHERE swiper_id = ?', [userId]);
+  await dbRun('DELETE FROM swipes WHERE swiper_id = ?', [userId]);
   res.json({ success: true });
 });
 
 // Discover
-app.get('/api/discover/:userId', (req, res) => {
-  const user = dbGet('SELECT * FROM users WHERE id = ?', [req.params.userId]);
+app.get('/api/discover/:userId', async (req, res) => {
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.params.userId]);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { minAge, maxAge, city, badge, adminKey } = req.query;
@@ -479,12 +441,12 @@ app.get('/api/discover/:userId', (req, res) => {
   query += ' ORDER BY is_promoted DESC, (CASE WHEN city = ? THEN 0 ELSE 1 END), ABS(age - ?) ASC LIMIT 50';
   params.push(user.city, user.age);
 
-  const profiles = dbAll(query, params).map(publicUser);
+  const profiles = (await dbAll(query, params)).map(publicUser);
   res.json(profiles);
 });
 
 // Swipe
-app.post('/api/swipe', (req, res) => {
+app.post('/api/swipe', async (req, res) => {
   const { swiperId, swipedId, direction } = req.body;
   if (!swiperId || !swipedId || !direction) {
     return res.status(400).json({ error: 'Missing fields' });
@@ -495,33 +457,33 @@ app.post('/api/swipe', (req, res) => {
   }
 
   try {
-    dbRun('INSERT OR REPLACE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+    await dbRun('INSERT OR REPLACE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
       [swiperId, swipedId, direction]);
 
     try {
-      dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [swipedId, swiperId]);
+      await dbRun('INSERT INTO profile_views (viewed_id, viewer_id) VALUES (?, ?)', [swipedId, swiperId]);
     } catch(e) {}
 
     if (direction === 'right') {
-      dbRun('INSERT OR IGNORE INTO inbox (receiver_id, sender_id) VALUES (?, ?)', [swipedId, swiperId]);
+      await dbRun('INSERT OR IGNORE INTO inbox (receiver_id, sender_id) VALUES (?, ?)', [swipedId, swiperId]);
 
-      const mutual = dbGet(
+      const mutual = await dbGet(
         'SELECT * FROM swipes WHERE swiper_id = ? AND swiped_id = ? AND direction = ?',
         [swipedId, swiperId, 'right']
       );
 
       if (mutual) {
         const matchId = uuidv4();
-        dbRun('INSERT OR IGNORE INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
+        await dbRun('INSERT OR IGNORE INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
           [matchId, swiperId, swipedId]);
 
-        dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+        await dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
           ['accepted', swipedId, swiperId]);
-        dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+        await dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
           ['accepted', swiperId, swipedId]);
 
-        const otherUser = dbGet('SELECT * FROM users WHERE id = ?', [swipedId]);
-        const thisUser = dbGet('SELECT * FROM users WHERE id = ?', [swiperId]);
+        const otherUser = await dbGet('SELECT * FROM users WHERE id = ?', [swipedId]);
+        const thisUser = await dbGet('SELECT * FROM users WHERE id = ?', [swiperId]);
         io.to(swipedId).emit('new_match', { matchId, user: thisUser });
         io.to(swiperId).emit('new_match', { matchId, user: otherUser });
 
@@ -537,8 +499,8 @@ app.post('/api/swipe', (req, res) => {
 });
 
 // Inbox
-app.get('/api/inbox/:userId', (req, res) => {
-  const items = dbAll(`
+app.get('/api/inbox/:userId', async (req, res) => {
+  const items = await dbAll(`
     SELECT inbox.*, users.name, users.age, users.city, users.badge, users.profile_pic, users.gender
     FROM inbox
     JOIN users ON users.id = inbox.sender_id
@@ -549,47 +511,47 @@ app.get('/api/inbox/:userId', (req, res) => {
 });
 
 // Respond to inbox
-app.post('/api/inbox/respond', (req, res) => {
+app.post('/api/inbox/respond', async (req, res) => {
   const { receiverId, senderId, action } = req.body;
 
   if (action === 'accept') {
-    dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+    await dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
       ['accepted', receiverId, senderId]);
 
-    dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+    await dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
       [receiverId, senderId, 'right']);
 
-    const existingMatch = dbGet(
+    const existingMatch = await dbGet(
       'SELECT * FROM matches WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)',
       [receiverId, senderId, senderId, receiverId]
     );
 
     const matchId = existingMatch ? existingMatch.id : uuidv4();
     if (!existingMatch) {
-      dbRun('INSERT INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
+      await dbRun('INSERT INTO matches (id, user1_id, user2_id) VALUES (?, ?, ?)',
         [matchId, senderId, receiverId]);
     }
 
-    const sender = dbGet('SELECT * FROM users WHERE id = ?', [senderId]);
-    const receiver = dbGet('SELECT * FROM users WHERE id = ?', [receiverId]);
+    const sender = await dbGet('SELECT * FROM users WHERE id = ?', [senderId]);
+    const receiver = await dbGet('SELECT * FROM users WHERE id = ?', [receiverId]);
 
     io.to(senderId).emit('new_match', { matchId, user: receiver });
     io.to(receiverId).emit('new_match', { matchId, user: sender });
 
     res.json({ matched: true, matchId });
   } else {
-    dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
+    await dbRun('UPDATE inbox SET status = ? WHERE receiver_id = ? AND sender_id = ?',
       ['rejected', receiverId, senderId]);
-    dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
+    await dbRun('INSERT OR IGNORE INTO swipes (swiper_id, swiped_id, direction) VALUES (?, ?, ?)',
       [receiverId, senderId, 'left']);
     res.json({ matched: false });
   }
 });
 
 // Matches
-app.get('/api/matches/:userId', (req, res) => {
+app.get('/api/matches/:userId', async (req, res) => {
   const uid = req.params.userId;
-  const matches = dbAll(`
+  const matches = await dbAll(`
     SELECT matches.id as matchId, matches.created_at as matchedAt,
       CASE WHEN matches.user1_id = ? THEN u2.id ELSE u1.id END as partnerId,
       CASE WHEN matches.user1_id = ? THEN u2.name ELSE u1.name END as partnerName,
@@ -612,8 +574,8 @@ app.get('/api/matches/:userId', (req, res) => {
 });
 
 // Messages
-app.get('/api/messages/:matchId', (req, res) => {
-  const messages = dbAll(`
+app.get('/api/messages/:matchId', async (req, res) => {
+  const messages = await dbAll(`
     SELECT messages.*, users.name as senderName, users.profile_pic as senderPic
     FROM messages
     JOIN users ON users.id = messages.sender_id
@@ -624,23 +586,23 @@ app.get('/api/messages/:matchId', (req, res) => {
 });
 
 // Send message
-app.post('/api/messages', (req, res) => {
+app.post('/api/messages', async (req, res) => {
   const { matchId, senderId, text } = req.body;
   if (!matchId || !senderId || !text) {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
   const id = uuidv4();
-  dbRun('INSERT INTO messages (id, match_id, sender_id, text) VALUES (?, ?, ?, ?)',
+  await dbRun('INSERT INTO messages (id, match_id, sender_id, text) VALUES (?, ?, ?, ?)',
     [id, matchId, senderId, text]);
 
-  const message = dbGet(`
+  const message = await dbGet(`
     SELECT messages.*, users.name as senderName, users.profile_pic as senderPic
     FROM messages JOIN users ON users.id = messages.sender_id
     WHERE messages.id = ?
   `, [id]);
 
-  const match = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
+  const match = await dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
   const recipientId = match.user1_id === senderId ? match.user2_id : match.user1_id;
 
   io.to(recipientId).emit('new_message', message);

@@ -2,13 +2,12 @@ services:
   - type: web
     name: going-org
     runtime: node
-    plan: starter
     buildCommand: npm run build
     startCommand: npm start
-    disk:
-      name: going-data
-      mountPath: /opt/render/project/src/uploads
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_TOKEN
+        sync: false
